@@ -491,6 +491,28 @@ For parcels Capital Guardian says **BID** or **INVESTIGATE**:
 
 ---
 
+## Building the Frontend
+
+**Architecture:** See `FRONTEND_ARCHITECTURE.md`
+**Build prompt:** See `BUILD_FRONTEND_PROMPT.md`
+
+**How shell scripts access data** (use this same pattern):
+```bash
+# All scripts use curl to hit the FastAPI backend - no direct DB queries
+curl -s "http://localhost:8001/scrapers/pipeline-status/Arizona/Apache" | jq
+curl -s "http://localhost:8001/scrapers/bids?state=Arizona" | jq
+```
+
+The frontend should follow the same pattern: React calls FastAPI, FastAPI talks to MySQL. Never query the database directly from the frontend.
+
+**Key files for context:**
+- `backend/app/routers/scrapers.py` - Existing API endpoints
+- `backend/app/routers/review.py` - Review workflow endpoints
+- `backend/app/database.py` - DB connection setup
+- `backend/tests/test_api.py` - Existing unit tests (follow this pattern)
+
+---
+
 ## Next Steps
 
 1. ✅ **Phase 1A Complete** - Clickable links for all parcels
