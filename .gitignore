@@ -24,10 +24,12 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+Screenshot*
 
 # Node (frontend)
 node_modules/
 npm-debug.log*
+frontend/dist/
 
 # Claude
 .claude/

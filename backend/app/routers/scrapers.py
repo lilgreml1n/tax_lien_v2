@@ -26,6 +26,25 @@ class JobOut(BaseModel):
     status: str
     started_at: str
 
+class AssessmentUpdate(BaseModel):
+    check_street_view: Optional[bool] = None
+    check_street_view_notes: Optional[str] = None
+    check_power_lines: Optional[bool] = None
+    check_topography: Optional[bool] = None
+    check_topography_notes: Optional[str] = None
+    check_water_test: Optional[bool] = None
+    check_water_notes: Optional[str] = None
+    check_access_frontage: Optional[bool] = None
+    check_frontage_ft: Optional[int] = None
+    check_rooftop_count: Optional[bool] = None
+    check_rooftop_pct: Optional[int] = None
+    final_legal_matches_map: Optional[bool] = None
+    final_hidden_structure: Optional[bool] = None
+    final_who_cuts_grass: Optional[str] = None
+    final_approved: Optional[bool] = None
+    review_status: Optional[str] = None
+    reviewer_notes: Optional[str] = None
+
 # ==================== Scraper Config ====================
 
 @router.post("/config", tags=["Scrapers", "Config"])
@@ -238,6 +257,189 @@ def pipeline_status(state: str, county: str):
         "bids": bids,
         "do_not_bids": assessed - bids,
         "human_approved": reviewed,
+    }
+
+# ==================== UI Endpoints ====================
+
+@router.get("/parcels/detail/{parcel_id}", tags=["UI"])
+def get_parcel_detail(parcel_id: int):
+    """Get full parcel + assessment data for detail view."""
+    with engine.connect() as conn:
+        parcel = conn.execute(
+            text("""SELECT sp.*, a.id as assessment_id, a.decision, a.risk_score,
+                           a.kill_switch, a.max_bid, a.property_type, a.ownership_type,
+                           a.critical_warning, a.assessment_status, a.review_status,
+                           a.check_street_view, a.check_street_view_notes,
+                           a.check_power_lines, a.check_topography, a.check_topography_notes,
+                           a.check_water_test, a.check_water_notes,
+                           a.check_access_frontage, a.check_frontage_ft,
+                           a.check_rooftop_count, a.check_rooftop_pct,
+                           a.final_legal_matches_map, a.final_hidden_structure,
+                           a.final_who_cuts_grass, a.final_approved,
+                           a.reviewer_notes, a.reviewed_at
+                    FROM scraped_parcels sp
+                    LEFT JOIN assessments a ON a.parcel_id = sp.id
+                    WHERE sp.id = :id"""),
+            {"id": parcel_id}
+        ).mappings().first()
+
+    if not parcel:
+        raise HTTPException(status_code=404, detail="Parcel not found")
+
+    return dict(parcel)
+
+
+@router.put("/assessments/{parcel_id}", tags=["UI"])
+def update_assessment(parcel_id: int, update: AssessmentUpdate):
+    """Update manual review checkboxes & notes."""
+    with engine.begin() as conn:
+        exists = conn.execute(
+            text("SELECT id FROM assessments WHERE parcel_id = :pid"),
+            {"pid": parcel_id}
+        ).scalar()
+
+        if not exists:
+            conn.execute(
+                text("INSERT INTO assessments (parcel_id) VALUES (:pid)"),
+                {"pid": parcel_id}
+            )
+
+        updates = {}
+        for field, value in update.model_dump().items():
+            if value is not None:
+                updates[field] = value
+
+        if not updates:
+            return {"success": True, "message": "No changes"}
+
+        updates["reviewed_at"] = datetime.now()
+        set_clause = ", ".join([f"{k} = :{k}" for k in updates.keys()])
+        query = f"UPDATE assessments SET {set_clause} WHERE parcel_id = :pid"
+        conn.execute(text(query), {**updates, "pid": parcel_id})
+
+    return {"success": True, "message": "Assessment updated"}
+
+
+@router.get("/parcels/search", tags=["UI"])
+def search_parcels(
+    state: Optional[str] = None,
+    county: Optional[str] = None,
+    decision: Optional[str] = None,
+    review_status: Optional[str] = None,
+    search_term: Optional[str] = None,
+    sort_by: str = "id",
+    limit: int = 50,
+    offset: int = 0
+):
+    """Search and filter parcels."""
+    where_clauses = []
+    params = {}
+
+    if state:
+        where_clauses.append("sp.state = :state")
+        params["state"] = state
+    if county:
+        where_clauses.append("sp.county = :county")
+        params["county"] = county
+    if decision:
+        where_clauses.append("a.decision = :decision")
+        params["decision"] = decision
+    if review_status:
+        where_clauses.append("a.review_status = :review_status")
+        params["review_status"] = review_status
+    if search_term:
+        where_clauses.append("""(
+            sp.parcel_id LIKE :search OR
+            sp.owner_name LIKE :search OR
+            sp.full_address LIKE :search
+        )""")
+        params["search"] = f"%{search_term}%"
+
+    where_sql = (" AND ".join(where_clauses)) if where_clauses else "1=1"
+
+    valid_sorts = ["id", "parcel_id", "billed_amount", "risk_score", "owner_name"]
+    if sort_by not in valid_sorts:
+        sort_by = "id"
+
+    sort_col = f"a.{sort_by}" if sort_by == "risk_score" else f"sp.{sort_by}"
+
+    query = f"""SELECT sp.id, sp.state, sp.county, sp.parcel_id, sp.owner_name,
+                       sp.full_address, sp.billed_amount,
+                       a.decision, a.risk_score, a.review_status, a.final_approved
+                FROM scraped_parcels sp
+                LEFT JOIN assessments a ON a.parcel_id = sp.id
+                WHERE {where_sql}
+                ORDER BY {sort_col} DESC
+                LIMIT :limit OFFSET :offset"""
+    params["limit"] = limit
+    params["offset"] = offset
+
+    count_query = f"""SELECT COUNT(*) FROM scraped_parcels sp
+                      LEFT JOIN assessments a ON a.parcel_id = sp.id
+                      WHERE {where_sql}"""
+
+    with engine.connect() as conn:
+        rows = conn.execute(text(query), params).mappings().all()
+        total = conn.execute(text(count_query), {k: v for k, v in params.items() if k not in ("limit", "offset")}).scalar()
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "parcels": [dict(row) for row in rows]
+    }
+
+
+@router.get("/dashboard/{state}/{county}", tags=["UI"])
+def get_dashboard_stats(state: str, county: str):
+    """Get summary stats for dashboard."""
+    with engine.connect() as conn:
+        total = conn.execute(
+            text("SELECT COUNT(*) FROM scraped_parcels WHERE state = :state AND county = :county"),
+            {"state": state, "county": county}
+        ).scalar()
+
+        assessed = conn.execute(
+            text("""SELECT COUNT(*) FROM assessments a
+                    JOIN scraped_parcels sp ON sp.id = a.parcel_id
+                    WHERE sp.state = :state AND sp.county = :county
+                    AND a.assessment_status = 'assessed'"""),
+            {"state": state, "county": county}
+        ).scalar()
+
+        bids = conn.execute(
+            text("""SELECT COUNT(*) FROM assessments a
+                    JOIN scraped_parcels sp ON sp.id = a.parcel_id
+                    WHERE sp.state = :state AND sp.county = :county
+                    AND a.decision = 'BID'"""),
+            {"state": state, "county": county}
+        ).scalar()
+
+        reviewed = conn.execute(
+            text("""SELECT COUNT(*) FROM assessments a
+                    JOIN scraped_parcels sp ON sp.id = a.parcel_id
+                    WHERE sp.state = :state AND sp.county = :county
+                    AND a.final_approved IS NOT NULL"""),
+            {"state": state, "county": county}
+        ).scalar()
+
+        approved = conn.execute(
+            text("""SELECT COUNT(*) FROM assessments a
+                    JOIN scraped_parcels sp ON sp.id = a.parcel_id
+                    WHERE sp.state = :state AND sp.county = :county
+                    AND a.final_approved = true"""),
+            {"state": state, "county": county}
+        ).scalar()
+
+    return {
+        "state": state,
+        "county": county,
+        "total_parcels": total,
+        "assessed": assessed,
+        "bids": bids,
+        "reviewed": reviewed,
+        "approved": approved,
+        "pending_review": total - reviewed,
     }
 
 # ==================== Background: Scrape Thread ====================
