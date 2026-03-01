@@ -36,10 +36,13 @@ def create_event(event: EventIn):
 
 
 @router.get("/events", tags=["Calendar"])
-def list_events(state: Optional[str] = None, month: Optional[int] = None, year: Optional[int] = None, limit: int = 50):
-    """List calendar events. Filter by state, month, year."""
+def list_events(state: Optional[str] = None, month: Optional[int] = None, year: Optional[int] = None, limit: int = 200, include_past: bool = False):
+    """List calendar events. Filter by state, month, year. Shows future events by default."""
     query = "SELECT * FROM calendar_events WHERE 1=1"
     params = {}
+
+    if not include_past and not month and not year:
+        query += " AND event_date >= CURDATE()"
 
     if state:
         query += " AND state = :state"
