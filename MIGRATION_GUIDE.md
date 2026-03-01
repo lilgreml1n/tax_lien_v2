@@ -86,7 +86,7 @@ Once the script finishes:
 
 2. **Check Frontend:**
    Open your browser on your laptop and go to:
-   `http://192.168.100.133:8082`
+   `http://192.168.100.133:8083`
 
 ---
 

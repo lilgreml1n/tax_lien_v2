@@ -138,7 +138,7 @@ GET /scrapers/pipeline-status/Arizona/Apache
 ## Database Access
 
 **Connect with DBeaver/MySQL Workbench:**
-- Host: `localhost:3306`
+- Host: `localhost:3307`
 - Database: `lienhunter`
 - Username: `lienuser`
 - Password: `lienpass`

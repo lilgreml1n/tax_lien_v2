@@ -89,7 +89,7 @@ fi
 
 # 2. Start Services
 echo "Starting Docker containers..."
-docker-compose up -d --build
+docker compose up -d --build
 
 echo "Waiting for database to initialize (15s)..."
 sleep 15
@@ -109,7 +109,7 @@ fi
 
 echo "=== Restore Complete! ==="
 echo "Backend: http://localhost:8001"
-echo "Frontend: http://localhost:8082"
+echo "Frontend: http://localhost:8083"
 EOF
 chmod +x restore_on_dgx.sh
 

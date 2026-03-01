@@ -3,7 +3,7 @@
 # Saline County, NE - Scraper Launch Script (Fixed)
 # Built by Gemini using the Scraper Building Guide templates.
 
-API_URL="http://localhost:8001"
+API_URL="http://192.168.100.133:8001"
 
 echo "----------------------------------------------------"
 echo "1. REGISTERING SALINE COUNTY CONFIG..."

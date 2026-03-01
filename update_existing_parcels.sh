@@ -48,4 +48,4 @@ FROM scraped_parcels;
 EOF
 
 echo -e "\n${GREEN}✓ All existing parcels updated!${NC}"
-echo -e "${BLUE}Test: http://localhost:8001/scrapers/parcels/Arizona/Apache?limit=5${NC}\n"
+echo -e "${BLUE}Test: http://192.168.100.133:8001/scrapers/parcels/Arizona/Apache?limit=5${NC}\n"

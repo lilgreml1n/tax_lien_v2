@@ -16,7 +16,7 @@ echo -e "${BLUE}Progress Check: $STATE / $COUNTY${NC}"
 echo -e "${BLUE}========================================${NC}\n"
 
 # Get counts from API
-PIPELINE=$(curl -s "http://localhost:8001/scrapers/pipeline-status/$STATE/$COUNTY")
+PIPELINE=$(curl -s "http://192.168.100.133:8001/scrapers/pipeline-status/$STATE/$COUNTY")
 
 if [ -z "$PIPELINE" ]; then
     echo -e "${YELLOW}⚠️  API not responding. Is the backend running?${NC}"
@@ -86,5 +86,5 @@ if [ $BIDS -gt 0 ]; then
     echo -e "  ${YELLOW}→${NC} View BID parcels: ${BLUE}./view_bids.sh${NC}"
 fi
 
-echo -e "  ${YELLOW}→${NC} View in browser: ${BLUE}http://localhost:8001/docs${NC}"
+echo -e "  ${YELLOW}→${NC} View in browser: ${BLUE}http://192.168.100.133:8001/docs${NC}"
 echo ""

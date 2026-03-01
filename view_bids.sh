@@ -34,7 +34,7 @@ echo -e "${BLUE}========================================${NC}"
 echo -e "${GREEN}Investment Opportunities (BID) — $LABEL${NC}"
 echo -e "${BLUE}========================================${NC}\n"
 
-curl -s "http://localhost:8001/scrapers/bids?$PARAMS" | jq -r --arg county "$COUNTY" '
+curl -s "http://192.168.100.133:8001/scrapers/bids?$PARAMS" | jq -r --arg county "$COUNTY" '
     if length == 0 then
         "No BID parcels found yet. Run scrape + assess first."
     else
@@ -57,9 +57,12 @@ curl -s "http://localhost:8001/scrapers/bids?$PARAMS" | jq -r --arg county "$COU
   Ownership: \(.ownership_type)
   Max Bid: $\(.max_bid)
   Warning: \(.critical_warning)
+  Google Maps: \(.google_maps_url)
+  Zillow: \(.zillow_url)
+  Assessor: \(.assessor_url)
   ---"
         end
     end
 '
 
-echo -e "\n${BLUE}View in browser: http://localhost:8001/docs${NC}\n"
+echo -e "\n${BLUE}View in browser: http://192.168.100.133:8083${NC}\n"

@@ -21,7 +21,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-API_URL="http://localhost:8001"
+API_URL="http://192.168.100.133:8001"
 
 # Parse arguments
 STATE="${1:-Arizona}"

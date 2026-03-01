@@ -26,9 +26,9 @@ echo ""
 
 # Check API health
 echo -e "${YELLOW}API Health:${NC}"
-HEALTH=$(curl -s "http://localhost:8001/health" 2>/dev/null | jq -r '.status' || echo "error")
+HEALTH=$(curl -s "http://192.168.100.133:8001/health" 2>/dev/null | jq -r '.status' || echo "error")
 if [ "$HEALTH" = "ok" ]; then
-    echo -e "${GREEN}✓${NC} API: http://localhost:8001 (healthy)"
+    echo -e "${GREEN}✓${NC} API: http://192.168.100.133:8001 (healthy)"
 else
     echo -e "${RED}✗${NC} API: Not responding"
 fi
@@ -79,6 +79,6 @@ echo -e "${BLUE}========================================${NC}"
 echo -e "  View BIDs:       ${BLUE}./view_bids.sh${NC}"
 echo -e "  Quick test:      ${BLUE}./quick_test.sh${NC}"
 echo -e "  Full scrape:     ${BLUE}./scrape_all_apache.sh${NC}"
-echo -e "  API docs:        ${BLUE}http://localhost:8001/docs${NC}"
-echo -e "  Instructions:    ${BLUE}http://localhost:8001/instructions${NC}"
+echo -e "  API docs:        ${BLUE}http://192.168.100.133:8001/docs${NC}"
+echo -e "  Instructions:    ${BLUE}http://192.168.100.133:8001/instructions${NC}"
 echo ""

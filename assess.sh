@@ -22,7 +22,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-API_URL="http://localhost:8001"
+API_URL="http://192.168.100.133:8001"
 
 # Parse arguments
 STATE="${1:-Arizona}"
@@ -194,7 +194,7 @@ echo -e "\n${BLUE}========================================${NC}"
 echo -e "${GREEN}✓ Assessment pipeline complete!${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo -e "\nView full results:"
-echo -e "  Browser API Docs: ${BLUE}http://localhost:8001/docs${NC}"
+echo -e "  Browser API Docs: ${BLUE}http://192.168.100.133:8001/docs${NC}"
 echo -e "  All parcels:      ${BLUE}GET /scrapers/parcels/$STATE/$COUNTY${NC}"
 echo -e "  BIDs only:        ${BLUE}GET /scrapers/bids?state=$STATE${NC}"
 echo -e "  Rejects only:     ${BLUE}GET /scrapers/rejects?state=$STATE${NC}"

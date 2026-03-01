@@ -16,7 +16,7 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-API_URL="http://localhost:8001"
+API_URL="http://192.168.100.133:8001"
 LIMIT="${1:-0}"
 
 # Check for an existing checkpoint
