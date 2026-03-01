@@ -110,7 +110,7 @@ fi
 
 echo "=== Restore Complete! ==="
 echo "Backend: http://localhost:8001"
-echo "Frontend: http://localhost:8081"
+echo "Frontend: http://localhost:8082"
 EOF
 chmod +x restore_on_dgx.sh
 
