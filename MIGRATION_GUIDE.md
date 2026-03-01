@@ -5,12 +5,12 @@ This guide walks you through moving the Tax Lien v2 system from your local Mac t
 ## ✅ What Will Be Migrated
 - **Database:** Full MySQL backup (even while running).
 - **Backend:** Python code, Docker configuration.
-- **Frontend:** React code + new Docker configuration (to run it easily).
+- **Frontend:** React code + new Docker configuration.
 - **Data Files:** PDFs/Excel files you added.
+- **Configuration:** Your `.env` file is now included in the archive.
 
 ## 🚫 What Will NOT Be Migrated
-- **Passwords/.env:** Excluded for security. You will recreate the `.env` on the DGX.
-- **Node Modules/Virtual Envs:** Re-downloaded/built fresh on the DGX to ensure Linux compatibility.
+- **Node Modules/Virtual Envs:** Re-downloaded/built fresh on the DGX.
 
 ---
 

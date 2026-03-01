@@ -60,7 +60,6 @@ tar --exclude='./node_modules' \
     --exclude='./scripts/venv' \
     --exclude='./backend/app/__pycache__' \
     --exclude='./.git' \
-    --exclude='./.env' \
     --exclude='./.DS_Store' \
     --exclude="./$ARCHIVE_FILE" \
     --exclude="./$BACKUP_FILE" \
