@@ -25,4 +25,19 @@ export const api = {
 
   getDashboard: (state: string, county: string) =>
     API.get<DashboardStats>(`/scrapers/dashboard/${state}/${county}`),
+
+  getConfigs: () =>
+    API.get<{ state: string; county: string; scraper_name: string }[]>('/scrapers/config'),
+
+  getUpcomingEvents: () =>
+    API.get('/calendar/events'),
+
+  getNotificationsStatus: () =>
+    API.get<{ notifications_enabled: boolean; status: string }>('/calendar/notifications/status'),
+
+  enableNotifications: () =>
+    API.post<{ notifications_enabled: boolean; status: string }>('/calendar/notifications/enable'),
+
+  disableNotifications: () =>
+    API.post<{ notifications_enabled: boolean; status: string }>('/calendar/notifications/disable'),
 };

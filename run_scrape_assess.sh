@@ -4,11 +4,12 @@
 # LienHunter v2 - Automated Scrape & Assess Script
 #
 # Usage:
-#   ./run_scrape_assess.sh <state> <county> <scrape_limit> <assess_batch>
+#   ./run_scrape_assess.sh <state> <county> <scrape_limit> <assess_batch> [resume]
 #
 # Examples:
-#   ./run_scrape_assess.sh Arizona Apache 50 50
-#   ./run_scrape_assess.sh Arizona Apache 0 100  # 0 = scrape ALL
+#   ./run_scrape_assess.sh Arizona Apache 50 50           # Fresh start
+#   ./run_scrape_assess.sh Arizona Apache 0 100           # 0 = scrape ALL
+#   ./run_scrape_assess.sh Arizona Apache 0 100 resume    # Resume from checkpoint
 ##############################################################################
 
 set -e  # Exit on error
@@ -27,6 +28,7 @@ STATE="${1:-Arizona}"
 COUNTY="${2:-Apache}"
 SCRAPE_LIMIT="${3:-50}"
 ASSESS_BATCH="${4:-50}"
+RESUME="${5:-}"
 
 # Lock file to prevent concurrent runs
 LOCK_FILE="/tmp/lienhunter_${STATE}_${COUNTY}.lock"
@@ -69,6 +71,11 @@ echo -e "State:          ${GREEN}$STATE${NC}"
 echo -e "County:         ${GREEN}$COUNTY${NC}"
 echo -e "Scrape Limit:   ${GREEN}$SCRAPE_LIMIT${NC} (0 = all parcels)"
 echo -e "Assess Batch:   ${GREEN}$ASSESS_BATCH${NC}"
+if [ "$RESUME" = "resume" ]; then
+    echo -e "Mode:           ${YELLOW}RESUME (picking up where we left off)${NC}"
+else
+    echo -e "Mode:           ${GREEN}Fresh start${NC}"
+fi
 echo -e "${BLUE}========================================${NC}"
 echo -e "${YELLOW}⏱️  Scraper uses human-like delays (2-8s)"
 echo -e "   to avoid detection. This is normal!${NC}"
@@ -85,9 +92,24 @@ else
     exit 1
 fi
 
-# Step 2: Trigger scrape
-echo -e "${YELLOW}[2/5] Starting scrape...${NC}"
-SCRAPE_RESPONSE=$(curl -s -X POST "$API_URL/scrapers/scrape/$STATE/$COUNTY?limit=$SCRAPE_LIMIT")
+# Step 2: Check checkpoint (if resuming)
+if [ "$RESUME" = "resume" ]; then
+    echo -e "${YELLOW}[2/5] Checking checkpoint...${NC}"
+    CHECKPOINT=$(curl -s "$API_URL/scrapers/checkpoint/$STATE/$COUNTY")
+    LAST_PAGE=$(echo "$CHECKPOINT" | jq -r '.last_page_completed')
+    ALREADY_SCRAPED=$(echo "$CHECKPOINT" | jq -r '.total_parcels_scraped')
+    CP_STATUS=$(echo "$CHECKPOINT" | jq -r '.status')
+    if [ "$LAST_PAGE" != "0" ] && [ "$CP_STATUS" != "completed" ]; then
+        echo -e "${GREEN}✓ Checkpoint found: page $LAST_PAGE, $ALREADY_SCRAPED parcels already scraped${NC}"
+        echo -e "${BLUE}  Will resume from page $((LAST_PAGE + 1))${NC}\n"
+    else
+        echo -e "${YELLOW}  No checkpoint to resume from, starting fresh${NC}\n"
+    fi
+    SCRAPE_RESPONSE=$(curl -s -X POST "$API_URL/scrapers/scrape/$STATE/$COUNTY?limit=$SCRAPE_LIMIT&resume=true")
+else
+    echo -e "${YELLOW}[2/5] Starting scrape...${NC}"
+    SCRAPE_RESPONSE=$(curl -s -X POST "$API_URL/scrapers/scrape/$STATE/$COUNTY?limit=$SCRAPE_LIMIT")
+fi
 JOB_ID=$(echo "$SCRAPE_RESPONSE" | jq -r '.job_id')
 echo -e "${GREEN}✓ Scrape job started: $JOB_ID${NC}"
 echo -e "${BLUE}Waiting for scrape to complete...${NC}"
@@ -96,7 +118,7 @@ echo -e "${BLUE}Waiting for scrape to complete...${NC}"
 WAIT_TIME=0
 LAST_PAGE=0
 NO_PROGRESS_COUNT=0
-MAX_NO_PROGRESS=5  # Exit if no progress for 5 checks (5 minutes)
+MAX_NO_PROGRESS=15  # Exit if no progress for 15 checks (15 minutes) - allows time for human-like delays
 
 while true; do
     sleep 60  # Check every minute
@@ -119,11 +141,11 @@ while true; do
         # Making progress!
         LAST_PAGE=$CURRENT_PAGE
         NO_PROGRESS_COUNT=0
-        echo -ne "${BLUE}  Scraping page $CURRENT_PAGE... ${WAIT_TIME}s elapsed (~$((WAIT_TIME / 60)) min)\r${NC}"
+        echo -ne "${BLUE}  Scraping page $CURRENT_PAGE... ${WAIT_TIME}s elapsed (~$((WAIT_TIME / 60)) min) [Human delays active]\r${NC}"
     else
-        # No progress detected
+        # No progress detected (processing parcels on current page with human-like delays)
         NO_PROGRESS_COUNT=$((NO_PROGRESS_COUNT + 1))
-        echo -ne "${YELLOW}  Page $CURRENT_PAGE... ${WAIT_TIME}s elapsed (no progress: $NO_PROGRESS_COUNT/5)\r${NC}"
+        echo -ne "${YELLOW}  Page $CURRENT_PAGE... ${WAIT_TIME}s elapsed (processing with delays: $NO_PROGRESS_COUNT/$MAX_NO_PROGRESS)\r${NC}"
 
         if [ $NO_PROGRESS_COUNT -ge $MAX_NO_PROGRESS ]; then
             echo -e "\n${RED}✗ Scraper appears stuck. Check logs: docker logs tax_lien_v2-backend-1${NC}"

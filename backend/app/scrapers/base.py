@@ -1,8 +1,44 @@
 import asyncio
 import random
+import time
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Callable, Optional
 import httpx
+
+
+NETWORK_ERRORS = (
+    httpx.ConnectError,
+    httpx.TimeoutException,
+    httpx.RemoteProtocolError,
+    OSError,  # catches [Errno -3] name resolution failures
+)
+
+
+async def with_retry(coro_func, label: str = "", max_wait: int = 300, retry_delay: int = 30):
+    """
+    Retry a coroutine on network errors with a hard timeout.
+
+    Args:
+        coro_func: Zero-argument async callable, e.g. lambda: scraper._get_total_billed(pid)
+        label:     Human-readable description for log messages
+        max_wait:  Give up after this many seconds (default 5 minutes)
+        retry_delay: Seconds to wait between retries (default 30)
+    """
+    start = time.monotonic()
+    attempt = 0
+    while True:
+        try:
+            return await coro_func()
+        except NETWORK_ERRORS as e:
+            elapsed = time.monotonic() - start
+            remaining = max_wait - elapsed
+            if remaining <= 0:
+                print(f"[retry] {label} - giving up after {int(elapsed)}s: {e}", flush=True)
+                raise
+            attempt += 1
+            wait = min(retry_delay, remaining)
+            print(f"[retry] {label} - network error (attempt {attempt}), retrying in {int(wait)}s ({int(remaining)}s left): {e}", flush=True)
+            await asyncio.sleep(wait)
 
 
 class HumanBehavior:
@@ -49,9 +85,11 @@ class CountyScraper(ABC):
         self.state = state
         self.county = county
         self.session = None
+        self.total_parcels_available = 0  # Set by scraper before/after loop; written to checkpoint on completion
 
     @abstractmethod
-    async def scrape(self, limit: int = 0) -> List[Dict[str, Any]]:
+    async def scrape(self, limit: int = 0, start_page: int = 1,
+                     on_page_complete: Optional[Callable] = None) -> List[Dict[str, Any]]:
         pass
 
     async def close(self):

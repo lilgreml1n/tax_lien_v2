@@ -6,13 +6,13 @@
 cd "$(dirname "$0")"
 
 echo "🚀 Scraping ALL parcels from Apache County..."
-echo "⚠️  This may take 10-20 minutes and pull 2,000+ parcels"
+echo "⚠️  This may take 12-15 hours with human-like delays"
 echo ""
 read -p "Continue? (y/n) " -n 1 -r
 echo ""
 
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    ./run_scrape_assess.sh Arizona Apache 0 100
+    ./scrape.sh Arizona Apache 0
 else
     echo "Cancelled."
 fi

@@ -4,12 +4,13 @@ Apache County, Arizona Scraper
 Sources:
 - Auction listings: https://apache.arizonataxsale.com
 - Treasurer (billed amounts): https://eagletreasurer.co.apache.az.us
-- Assessor (legal class): https://eagleassessor.co.apache.az.us
+- Assessor (owner/value/lot): https://eagleassessor.co.apache.az.us
+- GIS centroids: https://services8.arcgis.com (public, no auth)
 """
 import re
 import httpx
-from typing import List, Dict, Any
-from app.scrapers.base import CountyScraper, HumanBehavior
+from typing import List, Dict, Any, Callable, Optional
+from app.scrapers.base import CountyScraper, HumanBehavior, with_retry
 
 
 class ApacheScraper(CountyScraper):
@@ -17,34 +18,78 @@ class ApacheScraper(CountyScraper):
     AUCTION_URL = "https://apache.arizonataxsale.com/index.cfm?folder=previewitems"
     TREASURER_URL = "https://eagletreasurer.co.apache.az.us:8443/treasurer/treasurerweb"
     ASSESSOR_URL = "https://eagleassessor.co.apache.az.us/assessor/taxweb"
+    GIS_URL = "https://services8.arcgis.com/KyZIQDOsXnGaTxj2/arcgis/rest/services/Parcels/FeatureServer/0/query"
+    ESRI_GEOCODE_URL = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/reverseGeocode"
 
     def __init__(self, state: str, county: str):
         super().__init__(state, county)
         self.treasurer_cookies = None
         self.assessor_cookies = None
 
-    async def scrape(self, limit: int = 0) -> List[Dict[str, Any]]:
+    async def scrape(self, limit: int = 0, start_page: int = 1,
+                     on_page_complete: Optional[Callable] = None) -> List[Dict[str, Any]]:
         liens = []
+        total_scraped = 0
         try:
             await self._login_treasurer()
             await self._login_assessor()
 
-            page = 1
+            page = start_page
             max_pages = 195
+
+            if start_page > 1:
+                print(f"[Apache] Resuming from page {start_page}", flush=True)
 
             while page <= max_pages:
                 print(f"[Apache] Fetching page {page}...", flush=True)
 
-                parcel_ids = await self._get_auction_page(page)
+                parcel_ids = await with_retry(
+                    lambda: self._get_auction_page(page),
+                    label=f"Apache auction page {page}",
+                    max_wait=300,
+                    retry_delay=30,
+                )
                 if not parcel_ids:
                     print(f"[Apache] No parcels at page {page}, stopping", flush=True)
                     break
 
+                page_liens = []
                 for pid in parcel_ids:
                     await HumanBehavior.request_delay()
 
-                    billed = await self._get_total_billed(pid)
-                    details = await self._get_parcel_details(pid)
+                    try:
+                        billed = await with_retry(
+                            lambda: self._get_total_billed(pid),
+                            label=f"Apache treasurer {pid}",
+                            max_wait=300,
+                            retry_delay=30,
+                        )
+                    except Exception as e:
+                        print(f"[Apache] {pid}: Failed to get billed amount - {e}", flush=True)
+                        billed = None
+
+                    try:
+                        details = await with_retry(
+                            lambda: self._get_parcel_details(pid),
+                            label=f"Apache assessor {pid}",
+                            max_wait=300,
+                            retry_delay=30,
+                        )
+                    except Exception as e:
+                        print(f"[Apache] {pid}: Failed to get parcel details - {e}", flush=True)
+                        details = {}
+
+                    try:
+                        await HumanBehavior.request_delay()
+                        tax_history = await with_retry(
+                            lambda: self._get_tax_history(pid),
+                            label=f"Apache tax history {pid}",
+                            max_wait=60,
+                            retry_delay=10,
+                        )
+                        details.update(tax_history)
+                    except Exception as e:
+                        print(f"[Apache] {pid}: Failed to get tax history - {e}", flush=True)
 
                     # Build URLs
                     assessor_url = f"{self.ASSESSOR_URL}/account.jsp?accountNum={pid}"
@@ -85,23 +130,32 @@ class ApacheScraper(CountyScraper):
                         "zillow_url": zillow_url,
                         "realtor_url": realtor_url,
                     }
-                    liens.append(lien)
+                    page_liens.append(lien)
+                    total_scraped += 1
 
-                    # Enhanced logging
+                    # Enhanced logging with fallbacks for missing data
                     acres_str = f"{details.get('lot_size_acres')}ac" if details.get('lot_size_acres') else "?"
                     value_str = f"${int(details.get('assessed_total_value'))}" if details.get('assessed_total_value') else "?"
-                    print(f"[Apache] {pid}: ${billed:.2f}, {acres_str}, Value={value_str}, Zone={details.get('zoning_code', '?')}", flush=True)
+                    billed_str = f"${billed:.2f}" if billed else "NULL"
+                    print(f"[Apache] {pid}: {billed_str}, {acres_str}, Value={value_str}, Zone={details.get('zoning_code', '?')}", flush=True)
 
-                    if limit > 0 and len(liens) >= limit:
+                    if limit > 0 and total_scraped >= limit:
                         print(f"[Apache] Reached limit of {limit}", flush=True)
                         break
 
-                if limit > 0 and len(liens) >= limit:
+                # Notify callback with this page's parcels
+                if on_page_complete and page_liens:
+                    on_page_complete(page_liens, page)
+
+                liens.extend(page_liens)
+
+                if limit > 0 and total_scraped >= limit:
                     break
 
                 await HumanBehavior.page_delay()
                 page += 1
 
+            self.total_parcels_available = total_scraped  # Best estimate after full run
             print(f"[Apache] Scraped {len(liens)} total", flush=True)
         except Exception as e:
             print(f"[Apache] Error: {e}", flush=True)
@@ -170,6 +224,80 @@ class ApacheScraper(CountyScraper):
                 return 0.0
         return 0.0
 
+    async def _get_tax_history(self, pid: str) -> dict:
+        """
+        Fetch tax payment history from treasurer &action=tx page.
+
+        Returns summary metrics for Capital Guardian:
+          - years_delinquent: consecutive years with any amount outstanding
+          - prior_liens_count: years where Lien Due > 0 (other investors hold liens)
+          - total_outstanding: sum of all Total Due across all years
+          - first_delinquent_year: earliest year with any amount due
+
+        HTML: <h2>Summary</h2><table class='account'>
+        Columns: Tax Due | Interest Due | Penalty Due | Misc Due | Lien Due | Lien Interest Due | Total Due
+        """
+        if not self.session:
+            self.session = httpx.AsyncClient(timeout=30.0, verify=False)
+
+        url = f"{self.TREASURER_URL}/account.jsp?account={pid}&action=tx"
+        response = await self.session.get(url, cookies=self.treasurer_cookies,
+                                          headers=HumanBehavior.get_headers(), follow_redirects=True)
+        html = response.text
+
+        result = {
+            "years_delinquent": None,
+            "prior_liens_count": None,
+            "total_outstanding": None,
+            "first_delinquent_year": None,
+        }
+
+        m = re.search(r'<h2>Summary</h2>(.*?)</table>', html, re.DOTALL)
+        if not m:
+            return result
+
+        table = m.group(1)
+        rows = re.findall(r'<tr><td>(\d{4})</td>(.*?)</tr>', table, re.DOTALL)
+        if not rows:
+            return result
+
+        year_data = []
+        for year_str, cells in rows:
+            vals = re.findall(r'\$([0-9,.]+)', cells)
+            if len(vals) >= 7:
+                try:
+                    year_data.append({
+                        "year": int(year_str),
+                        "tax_due": float(vals[0].replace(",", "")),
+                        "lien_due": float(vals[4].replace(",", "")),
+                        "total_due": float(vals[6].replace(",", "")),
+                    })
+                except (ValueError, IndexError):
+                    pass
+
+        if not year_data:
+            return result
+
+        total_outstanding = sum(r["total_due"] for r in year_data)
+        prior_liens_count = sum(1 for r in year_data if r["lien_due"] > 0)
+        delinquent_years = [r["year"] for r in year_data if r["total_due"] > 0]
+        first_delinquent_year = min(delinquent_years) if delinquent_years else None
+
+        # Consecutive delinquent years counting backward from current
+        sorted_years = sorted(delinquent_years, reverse=True)
+        consecutive = 0
+        for i, yr in enumerate(sorted_years):
+            if i == 0 or sorted_years[i - 1] - yr == 1:
+                consecutive += 1
+            else:
+                break
+
+        result["years_delinquent"] = consecutive
+        result["prior_liens_count"] = prior_liens_count
+        result["total_outstanding"] = round(total_outstanding, 2)
+        result["first_delinquent_year"] = first_delinquent_year
+        return result
+
     async def _get_legal_class(self, pid: str) -> str:
         """Legacy method - use _get_parcel_details instead"""
         if not self.session:
@@ -182,12 +310,21 @@ class ApacheScraper(CountyScraper):
         return "Unknown"
 
     async def _get_parcel_details(self, pid: str) -> dict:
-        """Get all parcel details from Assessor page - Phase 1A enhanced"""
+        """Get all parcel details from Assessor pages.
+
+        Fetches TWO documents:
+        1. Summary page - owner, address, FCV, legal class, legal description
+        2. Parcel Detail sub-doc - lot size (not available on summary page)
+
+        HTML structure verified against real Apache assessor responses 2026-02-17.
+        See APACHE_COUNTY_GOTCHAS.md section 4 for detailed pattern notes.
+        """
         if not self.session:
             self.session = httpx.AsyncClient(timeout=30.0, verify=False)
 
         url = f"{self.ASSESSOR_URL}/account.jsp?accountNum={pid}"
         response = await self.session.get(url, cookies=self.assessor_cookies, headers=HumanBehavior.get_headers(), follow_redirects=True)
+        html = response.text
 
         details = {
             "legal_class": "Unknown",
@@ -206,154 +343,171 @@ class ApacheScraper(CountyScraper):
             "owner_mailing_address": None,
         }
 
-        # Legal Class
-        match = re.search(r"Legal Class.*?<td[^>]*>([^<]+)</td>", response.text, re.DOTALL | re.IGNORECASE)
+        # --- Legal Class ---
+        # Pattern: <b>Legal Class</b> in <th>, then <td align="left">02.R</td>
+        match = re.search(r"Legal Class.*?<td[^>]*>([^<]+)</td>", html, re.DOTALL | re.IGNORECASE)
         if match:
             details["legal_class"] = match.group(1).strip()
 
-        # Full Address
-        address_patterns = [
-            r"(?:Situs|Property|Physical)\s+(?:Address|Location)[:\s]+([^<\n]+)",
-            r"<td[^>]*>\s*(?:Situs|Property)\s*Address[^<]*</td>\s*<td[^>]*>([^<]+)",
-        ]
-        for pattern in address_patterns:
-            match = re.search(pattern, response.text, re.IGNORECASE)
-            if match:
-                addr = match.group(1).strip()
-                if addr and len(addr) > 5:
-                    details["full_address"] = addr
-                    break
+        # --- Situs Address (often empty for vacant land) ---
+        match = re.search(r"<strong>Situs\s+Address</strong>\s*([^<]*)", html)
+        if match:
+            addr = match.group(1).strip()
+            if len(addr) > 3:
+                details["full_address"] = addr
 
-        # GIS Coordinates
-        coord_patterns = [
-            (r"latitude[\"']?\s*[:=]\s*([0-9.-]+)", r"longitude[\"']?\s*[:=]\s*([0-9.-]+)"),
-            (r"lat[\"']?\s*[:=]\s*([0-9.-]+)", r"lng[\"']?\s*[:=]\s*([0-9.-]+)"),
-        ]
-        for lat_pattern, lng_pattern in coord_patterns:
-            lat_match = re.search(lat_pattern, response.text, re.IGNORECASE)
-            lng_match = re.search(lng_pattern, response.text, re.IGNORECASE)
-            if lat_match and lng_match:
-                try:
-                    lat = float(lat_match.group(1))
-                    lon = float(lng_match.group(1))
-                    if 31 <= lat <= 37 and -115 <= lon <= -109:
-                        details["latitude"] = lat
-                        details["longitude"] = lon
-                        break
-                except ValueError:
-                    pass
+        # --- Owner Name ---
+        # Format: <b>Owner Name</b> 2 GUYS INVESTMENTS LLC  (inline, not a table cell)
+        match = re.search(r"<b>Owner\s+Name</b>\s*([^\n<]+)", html)
+        if match:
+            name = match.group(1).strip()
+            if len(name) > 2:
+                details["owner_name"] = name[:255]
 
-        # Lot Size (Acres and Sqft)
-        lot_patterns = [
-            r"(?:Lot Size|Acreage|Area)[:\s]+([0-9.]+)\s*(?:acres?|ac)",
-            r"([0-9.]+)\s*(?:acres?|ac)",
-        ]
-        for pattern in lot_patterns:
-            match = re.search(pattern, response.text, re.IGNORECASE)
-            if match:
-                try:
-                    acres = float(match.group(1))
-                    if 0.01 <= acres <= 10000:  # Reasonable range
-                        details["lot_size_acres"] = acres
-                        details["lot_size_sqft"] = int(acres * 43560)
-                        break
-                except ValueError:
-                    pass
+        # --- Owner Mailing Address ---
+        # Format: <b>Owner Address</b> PO BOX 265 <br>SNOWFLAKE, AZ 85937
+        match = re.search(r"<b>Owner\s+Address</b>\s*((?:[^<]|<br[^>]*>)+)", html)
+        if match:
+            raw = match.group(1)
+            addr = re.sub(r"<br[^>]*>", " ", raw).strip()
+            addr = re.sub(r"\s+", " ", addr)
+            if len(addr) > 5:
+                details["owner_mailing_address"] = addr[:500]
 
-        # If no acres found, try sqft
-        if not details["lot_size_sqft"]:
-            sqft_patterns = [
-                r"([0-9,]+)\s*(?:sq\.?\s*ft|square feet|sqft)",
-            ]
-            for pattern in sqft_patterns:
-                match = re.search(pattern, response.text, re.IGNORECASE)
-                if match:
-                    try:
-                        sqft = int(match.group(1).replace(",", ""))
-                        if 100 <= sqft <= 500000000:
-                            details["lot_size_sqft"] = sqft
-                            details["lot_size_acres"] = round(sqft / 43560, 2)
-                            break
-                    except ValueError:
-                        pass
+        # --- Full Cash Value (FCV) → assessed_total_value ---
+        # Label is "Full Cash Value (FCV)", NOT "Total Value"
+        # Format: <b>Full Cash Value (FCV)</b><td align="right">$5,900
+        match = re.search(r"Full Cash Value \(FCV\)</b><td[^>]*>\$?([\d,]+)", html)
+        if match:
+            try:
+                details["assessed_total_value"] = float(match.group(1).replace(",", ""))
+            except ValueError:
+                pass
 
-        # Zoning
-        zoning_patterns = [
-            r"(?:Zoning|Zone)[:\s]+([A-Z0-9-]+)",
-            r"<td[^>]*>\s*Zoning[^<]*</td>\s*<td[^>]*>([^<]+)",
-        ]
-        for pattern in zoning_patterns:
-            match = re.search(pattern, response.text, re.IGNORECASE)
-            if match:
-                details["zoning_code"] = match.group(1).strip()
-                # Common zoning descriptions
-                zoning_map = {
-                    "R-1": "Single Family Residential",
-                    "R-2": "Multi-Family Residential",
-                    "C-1": "Commercial",
-                    "A-1": "Agricultural",
-                    "RU": "Rural Residential",
-                }
-                details["zoning_description"] = zoning_map.get(details["zoning_code"], "See County Zoning")
-                break
+        # --- Legal Description ---
+        # Format: after "Legal Summary" heading with nested <font> tag and closing </strong>
+        # Example: <strong>Legal Summary <font ...>...</font></strong> Subdivision: ...
+        match = re.search(r"Legal Summary[^<]*(?:<[^>]+>)*</strong>\s*([^<]+)", html)
+        if match:
+            desc = re.sub(r"\s+", " ", match.group(1).strip())
+            if len(desc) > 5:
+                details["legal_description"] = desc[:1000]
 
-        # Assessed Values
-        value_patterns = [
-            (r"(?:Land|Site)\s+Value[:\s]+\$?\s*([\d,]+)", "assessed_land_value"),
-            (r"Improvement\s+Value[:\s]+\$?\s*([\d,]+)", "assessed_improvement_value"),
-            (r"Total\s+(?:Assessed\s+)?Value[:\s]+\$?\s*([\d,]+)", "assessed_total_value"),
-        ]
-        for pattern, field in value_patterns:
-            match = re.search(pattern, response.text, re.IGNORECASE)
-            if match:
-                try:
-                    details[field] = float(match.group(1).replace(",", ""))
-                except ValueError:
-                    pass
+        # --- Lot Size: requires second fetch to Parcel Detail sub-document ---
+        # The doc ID is embedded in the sidebar nav link:
+        # <a ... href="account.jsp?accountNum=R0026183&doc=R0026183.1721088546772">Parcel Detail</a>
+        doc_match = re.search(
+            r'href="account\.jsp\?accountNum=[^&]+&doc=([^"]+)">Parcel Detail', html
+        )
+        if doc_match:
+            doc_id = doc_match.group(1)
+            try:
+                await HumanBehavior.request_delay()
+                detail_url = f"{self.ASSESSOR_URL}/account.jsp?accountNum={pid}&doc={doc_id}"
+                detail_resp = await self.session.get(
+                    detail_url, cookies=self.assessor_cookies,
+                    headers=HumanBehavior.get_headers(), follow_redirects=True
+                )
+                detail_html = detail_resp.text
 
-        # Legal Description
-        legal_patterns = [
-            r"Legal Description[:\s]+([^<\n]{10,500})",
-            r"<td[^>]*>\s*Legal[^<]*</td>\s*<td[^>]*>([^<]{10,500})",
-        ]
-        for pattern in legal_patterns:
-            match = re.search(pattern, response.text, re.IGNORECASE | re.DOTALL)
-            if match:
-                desc = match.group(1).strip()
-                if len(desc) > 10:
-                    details["legal_description"] = desc[:1000]  # Cap at 1000 chars
-                    break
+                # Parcel Size value
+                size_match = re.search(
+                    r"Parcel Size</span><br[^/]*/><span[^>]*><span[^>]*>([\d.]+)", detail_html
+                )
+                # Unit of Measure (Acre / Sq Ft)
+                unit_match = re.search(
+                    r"Unit of Measure</span><br[^/]*/><span[^>]*><span[^>]*>([^&<]+)", detail_html
+                )
 
-        # Owner Name
-        owner_patterns = [
-            r"(?:Owner|Taxpayer)\s*Name[:\s]+([^<\n]{2,200})",
-            r"<td[^>]*>\s*(?:Owner|Taxpayer)[^<]*</td>\s*<td[^>]*>([^<]{2,200})",
-            r"(?:Owner|Taxpayer)[:\s]*<[^>]*>([^<]{2,200})",
-        ]
-        for pattern in owner_patterns:
-            match = re.search(pattern, response.text, re.IGNORECASE)
-            if match:
-                name = match.group(1).strip()
-                if len(name) > 2 and not name.lower().startswith("owner"):
-                    details["owner_name"] = name[:255]
-                    break
+                if size_match and unit_match:
+                    size_val = float(size_match.group(1))
+                    unit = unit_match.group(1).strip().lower()
+                    if "acre" in unit and 0.001 <= size_val <= 100000:
+                        details["lot_size_acres"] = size_val
+                        details["lot_size_sqft"] = int(size_val * 43560)
+                    elif ("sq" in unit or "feet" in unit) and 100 <= size_val <= 500000000:
+                        details["lot_size_sqft"] = int(size_val)
+                        details["lot_size_acres"] = round(size_val / 43560, 4)
+                elif size_match:
+                    # No unit — assume acres if reasonable
+                    size_val = float(size_match.group(1))
+                    if 0.001 <= size_val <= 10000:
+                        details["lot_size_acres"] = size_val
+                        details["lot_size_sqft"] = int(size_val * 43560)
+            except Exception as e:
+                print(f"[Apache] {pid}: Parcel Detail sub-doc failed - {e}", flush=True)
 
-        # Owner Mailing Address
-        mailing_patterns = [
-            r"(?:Mailing|Tax)\s+Address[:\s]+([^<\n]{5,500})",
-            r"<td[^>]*>\s*(?:Mailing|Tax)\s+Address[^<]*</td>\s*<td[^>]*>([^<]{5,500})",
-        ]
-        for pattern in mailing_patterns:
-            match = re.search(pattern, response.text, re.IGNORECASE | re.DOTALL)
-            if match:
-                addr = match.group(1).strip()
-                # Clean up extra whitespace and newlines
-                addr = re.sub(r'\s+', ' ', addr)
-                if len(addr) > 5:
-                    details["owner_mailing_address"] = addr[:500]
-                    break
+        # --- GIS Centroid (ArcGIS REST API, public, no auth) ---
+        try:
+            gis = await self._get_gis_data(pid)
+            if gis:
+                details["latitude"] = gis.get("lat")
+                details["longitude"] = gis.get("lon")
+                # Use situs from GIS if assessor page had no address
+                if not details["full_address"] and gis.get("situs"):
+                    details["full_address"] = gis["situs"]
+        except Exception as e:
+            print(f"[Apache] {pid}: GIS lookup failed - {e}", flush=True)
 
         return details
+
+    async def _get_gis_data(self, account_number: str) -> Optional[dict]:
+        """
+        Fetch parcel centroid from Apache County ArcGIS REST API.
+        Public service, no authentication required.
+        Returns: {lat, lon, situs, parcel_num} or None
+        """
+        params = {
+            "where": f"ACCOUNTNUMBER='{account_number}'",
+            "outFields": "ACCOUNTNUMBER,PARCEL_NUM,OWNERNAME,SITUS",
+            "returnGeometry": "true",
+            "returnCentroid": "true",
+            "outSR": "4326",
+            "f": "json",
+        }
+        resp = await self.session.get(self.GIS_URL, params=params, timeout=15)
+        data = resp.json()
+        features = data.get("features", [])
+        if not features:
+            return None
+
+        feat = features[0]
+        centroid = feat.get("centroid") or {}
+
+        # Fallback: compute centroid from polygon rings
+        if not centroid and feat.get("geometry", {}).get("rings"):
+            rings = feat["geometry"]["rings"][0]
+            lons = [p[0] for p in rings]
+            lats = [p[1] for p in rings]
+            centroid = {"x": sum(lons) / len(lons), "y": sum(lats) / len(lats)}
+
+        lat = centroid.get("y")
+        lon = centroid.get("x")
+
+        # Validate Arizona bounds
+        if lat and lon and not (31 <= lat <= 37 and -115 <= lon <= -109):
+            lat, lon = None, None
+
+        situs = (feat["attributes"].get("SITUS") or "").strip() or None
+
+        # Reverse geocode if no SITUS address and we have valid coordinates
+        if not situs and lat and lon:
+            try:
+                geo_resp = await self.session.get(self.ESRI_GEOCODE_URL, params={
+                    "location": f"{lon},{lat}", "f": "json",
+                }, timeout=10)
+                match_addr = geo_resp.json().get("address", {}).get("Match_addr")
+                if match_addr:
+                    situs = match_addr
+            except Exception:
+                pass
+
+        return {
+            "lat": lat,
+            "lon": lon,
+            "situs": situs,
+            "parcel_num": feat["attributes"].get("PARCEL_NUM"),
+        }
 
     def _build_google_maps_url(self, lat: float = None, lon: float = None, address: str = None, parcel_id: str = None) -> str:
         """Build Google Maps URL from coordinates or address"""

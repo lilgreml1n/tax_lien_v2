@@ -28,6 +28,27 @@ This scrapes 10 parcels and assesses them (takes ~2 minutes).
 
 ---
 
+## Multi-State Support
+
+Current supported counties:
+- **Arizona:** Apache, Coconino, Mohave, Yavapai
+- **Nebraska:** Lancaster, Sarpy, Saline, Douglas
+
+---
+
+## 🎨 Web Frontend (React)
+
+A modern dashboard for reviewing parcels, viewing tax sale calendars, and toggling notifications.
+
+**Start Frontend:**
+```bash
+cd frontend
+npm run dev
+```
+Accessible at: http://localhost:5173
+
+---
+
 ## Shell Scripts (No Clicking Required!)
 
 ### 🚀 Main Script - Scrape & Assess

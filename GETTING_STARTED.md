@@ -1,5 +1,8 @@
 # LienHunter v2 - Getting Started Guide
 
+**Last Updated:** 2026-02-28
+**Version:** 2.0.0 (Multi-State Edition)
+
 Welcome! This guide will get you up and running with the LienHunter v2 tax lien investment platform.
 
 ---
@@ -19,14 +22,22 @@ Welcome! This guide will get you up and running with the LienHunter v2 tax lien 
 
 ## What Is This?
 
-LienHunter v2 is an **automated tax lien investment research platform** that:
+LienHunter v2 is an **automated multi-state tax lien research platform** that:
 
-1. **Scrapes** tax lien data from county websites
+1. **Scrapes** tax lien data from county websites (Arizona & Nebraska)
 2. **Assesses** each property using AI (Capital Guardian on DGX)
 3. **Generates clickable review links** (Google Maps, Street View, Zillow, etc.)
 4. **Recommends** which liens to bid on vs avoid
 
 **Goal:** Find profitable tax lien investments while filtering out bad deals automatically.
+
+---
+
+## Supported Counties
+
+Current supported counties:
+- **Arizona:** Apache, Coconino, Mohave, Yavapai
+- **Nebraska:** Lancaster, Sarpy, Saline, Douglas
 
 ---
 
@@ -39,6 +50,13 @@ docker-compose up -d
 ```
 
 Wait 10 seconds for containers to start.
+
+### Step 1b: Start the Frontend (React Dashboard)
+```bash
+cd /Users/raven/Documents/CURRENT_PROJECTS/tax_lien_v2/frontend
+npm run dev
+```
+Opens at http://localhost:5173 — shows parcels, assessments, and review tools.
 
 ### Step 2: Verify System is Running
 ```bash
@@ -365,6 +383,42 @@ From 100 parcels scraped:
 
 ---
 
+## Running Mohave County
+
+Mohave is different from Apache — it downloads an Excel file instead of scraping pages.
+
+### First-time setup (must rebuild Docker for Playwright support)
+```bash
+docker compose build backend   # Downloads Chromium browser (~300MB, one-time)
+docker compose up -d
+```
+
+### Register the Mohave scraper (one-time after Docker is up)
+```bash
+curl -X POST "http://localhost:8001/scrapers/config" \
+  -H "Content-Type: application/json" \
+  -d '{"state":"Arizona","county":"Mohave","scraper_name":"app.scrapers.arizona.mohave.MohaveScraper","scraper_version":"1.0"}'
+```
+
+### Quick test (50 parcels)
+```bash
+curl -X POST "http://localhost:8001/scrapers/scrape/Arizona/Mohave?limit=50"
+```
+
+### Full scrape (all parcels in Excel — stays running until done)
+```bash
+./scrape.sh Arizona Mohave
+```
+
+### View results
+```bash
+curl "http://localhost:8001/scrapers/parcels/Arizona/Mohave?limit=100"
+```
+
+**Note:** Mohave downloads ~300MB of Chromium browser the first time Docker rebuilds. The Excel download itself takes ~30 seconds. Then EagleWeb lookups run at the same 2-8s human delay as Apache.
+
+---
+
 ## Shell Scripts Reference
 
 | Script | Use Case | Time |
@@ -375,6 +429,36 @@ From 100 parcels scraped:
 | `./scrape_all_apache.sh` | Get everything | 9-11 hours |
 | `./view_bids.sh` | See BID parcels | Instant |
 | `./update_existing_parcels.sh` | Add URLs to old data | 1 min |
+
+## Phase 3: Backfill Missing Data
+
+After assessing, some parcels will be missing owner, value, or GPS data (the assessor site is flaky).
+Run the backfill to fill those gaps — it re-hits the assessor, GIS, and treasurer sites.
+
+**BID parcels only (recommended — prioritized by risk score):**
+```bash
+docker exec -it tax_lien_v2-backend-1 python /app/app/backfill_bids.py --bids-only
+```
+
+**All parcels missing any key data:**
+```bash
+docker exec -it tax_lien_v2-backend-1 python /app/app/backfill_bids.py
+```
+
+**Or trigger via the API (shows in Swagger at `/docs`):**
+```bash
+# BID parcels only
+curl -X POST "http://localhost:8001/scrapers/backfill/Arizona/Apache?bids_only=true"
+
+# All parcels
+curl -X POST "http://localhost:8001/scrapers/backfill/Arizona/Apache"
+```
+
+**What it fills in:** owner name, mailing address, lat/lon, street address (reverse geocoded),
+assessed value (land + improvement + total), lot size, legal class, legal description,
+years delinquent, prior liens count, total outstanding, first delinquent year.
+
+**Safe to re-run** — uses `COALESCE` so it never overwrites existing data with nulls.
 
 ### Script Parameters
 

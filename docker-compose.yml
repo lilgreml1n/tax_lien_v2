@@ -20,6 +20,8 @@ services:
     build: ./backend
     ports:
       - "8001:8001"
+    env_file:
+      - .env
     environment:
       DATABASE_URL: "mysql+pymysql://lienuser:lienpass@db:3306/lienhunter"
       OLLAMA_URL: "http://host.docker.internal:11434"
@@ -32,6 +34,7 @@ services:
       - ./INSTRUCTIONS.md:/INSTRUCTIONS.md:ro
       - ./README.md:/README.md:ro
       - ./GETTING_STARTED.md:/GETTING_STARTED.md:ro
+      - ./docs:/app/docs:ro
     command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
     depends_on:
       db:

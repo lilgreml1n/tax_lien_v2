@@ -5,15 +5,17 @@ Sources:
 - Auction listings: https://coconino.arizonataxsale.com/index.cfm?folder=previewitems
 - Assessor (parcel + owner details): https://eagleassessor.coconino.az.gov:444/assessor/taxweb
 
-NOTE: Treasurer integration TBD - billed_amount will be NULL for now
+Same EagleSoft assessor system as Apache — HTML patterns are identical.
+NOTE: Treasurer integration TBD - billed_amount comes from auction page only.
+NOTE: No GIS/ArcGIS endpoint known — lat/lon will be NULL (backfill via ESRI geocoder).
 """
 import re
 import httpx
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Callable, Optional
 from app.scrapers.base import CountyScraper, HumanBehavior
 
 
-class CoconinoCraper(CountyScraper):
+class CoconinaScraper(CountyScraper):
 
     AUCTION_URL = "https://coconino.arizonataxsale.com/index.cfm?folder=previewitems"
     ASSESSOR_URL = "https://eagleassessor.coconino.az.gov:444/assessor/taxweb"
@@ -22,13 +24,18 @@ class CoconinoCraper(CountyScraper):
         super().__init__(state, county)
         self.assessor_cookies = None
 
-    async def scrape(self, limit: int = 0) -> List[Dict[str, Any]]:
+    async def scrape(self, limit: int = 0, start_page: int = 1,
+                     on_page_complete: Optional[Callable] = None) -> List[Dict[str, Any]]:
         liens = []
+        total_scraped = 0
         try:
             await self._login_assessor()
 
-            page = 1
+            page = start_page
             max_pages = 500  # Safety limit (will stop when no parcels found)
+
+            if start_page > 1:
+                print(f"[Coconino] Resuming from page {start_page}", flush=True)
 
             while page <= max_pages:
                 print(f"[Coconino] Fetching page {page}...", flush=True)
@@ -38,6 +45,7 @@ class CoconinoCraper(CountyScraper):
                     print(f"[Coconino] No parcels at page {page}, stopping", flush=True)
                     break
 
+                page_liens = []
                 for parcel in parcel_data:
                     pid = parcel['parcel_id']
                     face_amount = parcel['face_amount']
@@ -71,7 +79,7 @@ class CoconinoCraper(CountyScraper):
                     lien = {
                         "parcel_id": pid,
                         "address": "Coconino County, AZ",  # Keep for backward compatibility
-                        "billed_amount": face_amount,  # ✅ NOW FROM AUCTION PAGE
+                        "billed_amount": face_amount,  # NOW FROM AUCTION PAGE
                         "state": "Arizona",
                         "county": "Coconino",
                         # Merge all details
@@ -84,7 +92,8 @@ class CoconinoCraper(CountyScraper):
                         "zillow_url": zillow_url,
                         "realtor_url": realtor_url,
                     }
-                    liens.append(lien)
+                    page_liens.append(lien)
+                    total_scraped += 1
 
                     # Enhanced logging
                     owner_str = details.get('owner_name', '?')[:30] if details.get('owner_name') else '?'
@@ -92,16 +101,23 @@ class CoconinoCraper(CountyScraper):
                     value_str = f"${int(details.get('assessed_total_value'))}" if details.get('assessed_total_value') else "?"
                     print(f"[Coconino] {pid}: Billed={billed_str}, Owner={owner_str}, Value={value_str}", flush=True)
 
-                    if limit > 0 and len(liens) >= limit:
+                    if limit > 0 and total_scraped >= limit:
                         print(f"[Coconino] Reached limit of {limit}", flush=True)
                         break
 
-                if limit > 0 and len(liens) >= limit:
+                # Notify callback with this page's parcels
+                if on_page_complete and page_liens:
+                    on_page_complete(page_liens, page)
+
+                liens.extend(page_liens)
+
+                if limit > 0 and total_scraped >= limit:
                     break
 
                 await HumanBehavior.page_delay()
                 page += 1
 
+            self.total_parcels_available = total_scraped  # Best estimate after full run
             print(f"[Coconino] Scraped {len(liens)} total", flush=True)
         except Exception as e:
             print(f"[Coconino] Error: {e}", flush=True)
@@ -187,9 +203,15 @@ class CoconinoCraper(CountyScraper):
         return unique_parcels
 
     async def _get_parcel_details(self, pid: str) -> dict:
-        """Get parcel details - Coconino Phase 1: Auction data only, assessor TBD"""
-        # TODO: Implement assessor search integration for owner/property data
-        # Currently returns minimal data - auction provides parcel ID only
+        """Get parcel details from Coconino EagleAssessor.
+
+        Same EagleSoft system as Apache — HTML patterns are identical.
+        Fetches TWO pages per parcel:
+          1. Summary page — owner, address, legal class, FCV, legal description
+          2. Parcel Detail sub-doc — lot size (not on summary page)
+        """
+        if not self.session:
+            self.session = httpx.AsyncClient(timeout=30.0, verify=False)
 
         details = {
             "legal_class": "Unknown",
@@ -204,203 +226,103 @@ class CoconinoCraper(CountyScraper):
             "assessed_improvement_value": None,
             "assessed_total_value": None,
             "legal_description": None,
-            "owner_name": None,  # TODO: Add assessor search integration
-            "owner_mailing_address": None,  # TODO: Add assessor search integration
-        }
-
-        return details
-
-    def _parse_search_results(self, html: str, pid: str) -> dict:
-        """Parse owner and property data from search results page"""
-        data = {}
-
-        # Owner Name - appears after account number in results
-        # Example: "ANTELOPE HOSPITALITY LLC"
-        owner_patterns = [
-            r"R[0-9]{7,8}[A-Z]?\s*(?:<[^>]*>)*\s*([0-9-]+)\s+([A-Z][A-Z\s,&.'-]+?)(?:<br|287|[0-9]{3,5}\s+[A-Z])",
-            r"Account#.*?<td[^>]*>([A-Z][A-Z\s,&.'-]{5,100}?)\s*(?:<br|[0-9])",
-        ]
-        for pattern in owner_patterns:
-            match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
-            if match:
-                # Get the last captured group
-                owner = match.group(match.lastindex).strip()
-                if len(owner) > 3 and owner.upper() == owner:  # All caps indicates owner name
-                    data["owner_name"] = owner
-                    break
-
-        # Owner Mailing Address - appears after owner name
-        # Example: "287 N LAKE POWELL BLVD\nPAGE 86040"
-        address_patterns = [
-            r"([0-9]{3,5}\s+[A-Z\s]+(?:BLVD|ST|AVE|DR|RD|WAY|LN|CT|PL|CIR)[^\n<]{0,50})\s*(?:<br|<\/td|\n)\s*([A-Z\s]+\s+[0-9]{5})",
-            r"<br\s*/>\s*([0-9]{3,5}[^<]{10,100}?)<br",
-        ]
-        for pattern in address_patterns:
-            match = re.search(pattern, html, re.IGNORECASE)
-            if match:
-                if match.lastindex == 2:
-                    # Address has two parts (street + city/zip)
-                    street = match.group(1).strip()
-                    city_zip = match.group(2).strip()
-                    data["owner_mailing_address"] = f"{street}, {city_zip}"
-                else:
-                    data["owner_mailing_address"] = match.group(1).strip()
-                break
-
-        # Try simpler pattern if above didn't work
-        if not data.get("owner_mailing_address"):
-            # Look for any address-like pattern after owner name
-            simple_addr = re.search(r"([0-9]{3,5}\s+[^\n<]{10,80})", html)
-            if simple_addr:
-                data["owner_mailing_address"] = simple_addr.group(1).strip()
-
-        return data
-
-    def _parse_base_document(self, html: str, pid: str) -> dict:
-        """Parse basic property details from main assessor page"""
-        data = {}
-
-        # Legal Class
-        match = re.search(r"Legal Class.*?<td[^>]*>([^<]+)</td>", html, re.DOTALL | re.IGNORECASE)
-        if match:
-            data["legal_class"] = match.group(1).strip()
-
-        # Full Address
-        address_patterns = [
-            r"(?:Situs|Property|Physical)\s+(?:Address|Location)[:\s]+([^<\n]+)",
-            r"<td[^>]*>\s*(?:Situs|Property)\s*Address[^<]*</td>\s*<td[^>]*>([^<]+)",
-        ]
-        for pattern in address_patterns:
-            match = re.search(pattern, html, re.IGNORECASE)
-            if match:
-                addr = match.group(1).strip()
-                if addr and len(addr) > 5:
-                    data["full_address"] = addr
-                    break
-
-        # GIS Coordinates
-        coord_patterns = [
-            (r"latitude[\"']?\s*[:=]\s*([0-9.-]+)", r"longitude[\"']?\s*[:=]\s*([0-9.-]+)"),
-            (r"lat[\"']?\s*[:=]\s*([0-9.-]+)", r"lng[\"']?\s*[:=]\s*([0-9.-]+)"),
-        ]
-        for lat_pattern, lng_pattern in coord_patterns:
-            lat_match = re.search(lat_pattern, html, re.IGNORECASE)
-            lng_match = re.search(lng_pattern, html, re.IGNORECASE)
-            if lat_match and lng_match:
-                try:
-                    lat = float(lat_match.group(1))
-                    lon = float(lng_match.group(1))
-                    if 34 <= lat <= 37 and -115 <= lon <= -109:  # Arizona bounds
-                        data["latitude"] = lat
-                        data["longitude"] = lon
-                        break
-                except ValueError:
-                    pass
-
-        # Lot Size (Acres)
-        lot_patterns = [
-            r"(?:Lot Size|Acreage|Area)[:\s]+([0-9.]+)\s*(?:acres?|ac)",
-            r"([0-9.]+)\s*(?:acres?|ac)",
-        ]
-        for pattern in lot_patterns:
-            match = re.search(pattern, html, re.IGNORECASE)
-            if match:
-                try:
-                    acres = float(match.group(1))
-                    if 0.01 <= acres <= 10000:
-                        data["lot_size_acres"] = acres
-                        data["lot_size_sqft"] = int(acres * 43560)
-                        break
-                except ValueError:
-                    pass
-
-        # Zoning
-        zoning_patterns = [
-            r"(?:Zoning|Zone)[:\s]+([A-Z0-9-]+)",
-            r"<td[^>]*>\s*Zoning[^<]*</td>\s*<td[^>]*>([^<]+)",
-        ]
-        for pattern in zoning_patterns:
-            match = re.search(pattern, html, re.IGNORECASE)
-            if match:
-                data["zoning_code"] = match.group(1).strip()
-                zoning_map = {
-                    "R-1": "Single Family Residential",
-                    "R-2": "Multi-Family Residential",
-                    "C-1": "Commercial",
-                    "A-1": "Agricultural",
-                    "RU": "Rural Residential",
-                }
-                data["zoning_description"] = zoning_map.get(data["zoning_code"], "See County Zoning")
-                break
-
-        # Assessed Values
-        value_patterns = [
-            (r"(?:Land|Site)\s+Value[:\s]+\$?\s*([\d,]+)", "assessed_land_value"),
-            (r"Improvement\s+Value[:\s]+\$?\s*([\d,]+)", "assessed_improvement_value"),
-            (r"Total\s+(?:Assessed\s+)?Value[:\s]+\$?\s*([\d,]+)", "assessed_total_value"),
-        ]
-        for pattern, field in value_patterns:
-            match = re.search(pattern, html, re.IGNORECASE)
-            if match:
-                try:
-                    data[field] = float(match.group(1).replace(",", ""))
-                except ValueError:
-                    pass
-
-        # Legal Description
-        legal_patterns = [
-            r"Legal Description[:\s]+([^<\n]{10,500})",
-            r"<td[^>]*>\s*Legal[^<]*</td>\s*<td[^>]*>([^<]{10,500})",
-        ]
-        for pattern in legal_patterns:
-            match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
-            if match:
-                desc = match.group(1).strip()
-                if len(desc) > 10:
-                    data["legal_description"] = desc[:1000]
-                    break
-
-        return data
-
-    async def _get_owner_info(self, pid: str, doc_id: str) -> dict:
-        """Fetch and parse ownership document"""
-        url = f"{self.ASSESSOR_URL}/account.jsp?accountNum={pid}&doc={doc_id}"
-        response = await self.session.get(url, cookies=self.assessor_cookies, headers=HumanBehavior.get_headers(), follow_redirects=True)
-
-        owner_data = {
             "owner_name": None,
             "owner_mailing_address": None,
         }
 
-        # Owner Name patterns
-        name_patterns = [
-            r"Owner\s+Name[:\s]+([^\n<]+)",
-            r"<td[^>]*>\s*Owner\s*Name[^<]*</td>\s*<td[^>]*>([^<]+)",
-            r"Name[:\s]+([A-Z][^\n<]{5,100})",
-        ]
-        for pattern in name_patterns:
-            match = re.search(pattern, response.text, re.IGNORECASE)
-            if match:
-                name = match.group(1).strip()
-                if len(name) > 3:  # Reasonable name length
-                    owner_data["owner_name"] = name
-                    break
+        try:
+            url = f"{self.ASSESSOR_URL}/account.jsp?accountNum={pid}"
+            response = await self.session.get(
+                url, cookies=self.assessor_cookies,
+                headers=HumanBehavior.get_headers(), follow_redirects=True
+            )
+            html = response.text
+        except Exception as e:
+            print(f"[Coconino] {pid}: assessor fetch failed - {e}", flush=True)
+            return details
 
-        # Mailing Address patterns
-        address_patterns = [
-            r"Mailing\s+Address[:\s]+([^\n<]{10,200})",
-            r"Owner\s+Address[:\s]+([^\n<]{10,200})",
-            r"<td[^>]*>\s*Mailing\s*Address[^<]*</td>\s*<td[^>]*>([^<]{10,200})",
-        ]
-        for pattern in address_patterns:
-            match = re.search(pattern, response.text, re.IGNORECASE)
-            if match:
-                addr = match.group(1).strip()
-                if len(addr) > 10:
-                    owner_data["owner_mailing_address"] = addr
-                    break
+        # Legal Class
+        match = re.search(r"Legal Class.*?<td[^>]*>([^<]+)</td>", html, re.DOTALL | re.IGNORECASE)
+        if match:
+            details["legal_class"] = match.group(1).strip()
 
-        return owner_data
+        # Situs Address
+        match = re.search(r"<strong>Situs\s+Address</strong>\s*([^<]*)", html)
+        if match:
+            addr = match.group(1).strip()
+            if len(addr) > 3:
+                details["full_address"] = addr
+
+        # Owner Name
+        match = re.search(r"<b>Owner\s+Name</b>\s*([^\n<]+)", html)
+        if match:
+            name = match.group(1).strip()
+            if len(name) > 2:
+                details["owner_name"] = name[:255]
+
+        # Owner Mailing Address
+        match = re.search(r"<b>Owner\s+Address</b>\s*((?:[^<]|<br[^>]*>)+)", html)
+        if match:
+            raw = match.group(1)
+            addr = re.sub(r"<br[^>]*>", " ", raw).strip()
+            addr = re.sub(r"\s+", " ", addr)
+            if len(addr) > 5:
+                details["owner_mailing_address"] = addr[:500]
+
+        # Full Cash Value (FCV) → assessed_total_value
+        match = re.search(r"Full Cash Value \(FCV\)</b><td[^>]*>\$?([\d,]+)", html)
+        if match:
+            try:
+                details["assessed_total_value"] = float(match.group(1).replace(",", ""))
+            except ValueError:
+                pass
+
+        # Legal Description
+        match = re.search(r"Legal Summary[^<]*(?:<[^>]+>)*</strong>\s*([^<]+)", html)
+        if match:
+            desc = re.sub(r"\s+", " ", match.group(1).strip())
+            if len(desc) > 5:
+                details["legal_description"] = desc[:1000]
+
+        # Parcel Detail sub-doc — lot size lives here
+        doc_match = re.search(
+            r'href="account\.jsp\?accountNum=[^&]+&doc=([^"]+)">Parcel Detail', html
+        )
+        if doc_match:
+            doc_id = doc_match.group(1)
+            try:
+                await HumanBehavior.request_delay()
+                detail_url = f"{self.ASSESSOR_URL}/account.jsp?accountNum={pid}&doc={doc_id}"
+                detail_resp = await self.session.get(
+                    detail_url, cookies=self.assessor_cookies,
+                    headers=HumanBehavior.get_headers(), follow_redirects=True
+                )
+                detail_html = detail_resp.text
+
+                size_match = re.search(
+                    r"Parcel Size</span><br[^/]*/><span[^>]*><span[^>]*>([\d.]+)", detail_html
+                )
+                unit_match = re.search(
+                    r"Unit of Measure</span><br[^/]*/><span[^>]*><span[^>]*>([^&<]+)", detail_html
+                )
+                if size_match and unit_match:
+                    size_val = float(size_match.group(1))
+                    unit = unit_match.group(1).strip().lower()
+                    if "acre" in unit and 0.001 <= size_val <= 100000:
+                        details["lot_size_acres"] = size_val
+                        details["lot_size_sqft"] = int(size_val * 43560)
+                    elif ("sq" in unit or "feet" in unit) and 100 <= size_val <= 500000000:
+                        details["lot_size_sqft"] = int(size_val)
+                        details["lot_size_acres"] = round(size_val / 43560, 4)
+                elif size_match:
+                    size_val = float(size_match.group(1))
+                    if 0.001 <= size_val <= 10000:
+                        details["lot_size_acres"] = size_val
+                        details["lot_size_sqft"] = int(size_val * 43560)
+            except Exception as e:
+                print(f"[Coconino] {pid}: Parcel Detail sub-doc failed - {e}", flush=True)
+
+        return details
 
     def _build_google_maps_url(self, lat: float = None, lon: float = None, address: str = None, parcel_id: str = None) -> str:
         """Build Google Maps URL from coordinates or address"""

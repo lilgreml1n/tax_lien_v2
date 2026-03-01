@@ -39,6 +39,49 @@
 - Focus on clickable links for human review now
 - Property photo analysis comes later
 
+## 🚀 Deployment & Git Preparation
+- [x] Create `.env.sample`
+- [x] Update `README.md` with multi-state support and frontend
+- [x] Update `ASSESSMENT_PLAYBOOK.md` with current logic
+- [x] Stage and commit all v2 changes for git push
+- [ ] Push to remote repository
+
+---
+
+## 🔥 Immediate Next - Layer 1 + 2 + 4 (PLAN.md)
+
+### Layer 1: Data Completeness ✅ DONE
+Files updated:
+- [x] `backend/app/database.py` - Added all 13 missing columns to `scraped_parcels` CREATE TABLE + idempotent ALTER TABLE migrations
+- [x] `backend/app/routers/scrapers.py` - SELECT query in assessment now fetches all fields
+- [ ] `backend/app/scrapers/arizona/apache.py` - Store `raw_html` (deferred - assessor regexes not matching Apache HTML yet)
+
+### Layer 2: Smarter Capital Guardian Prompt ✅ DONE
+Files updated:
+- [x] `backend/app/routers/scrapers.py` - Major overhaul:
+  - ALL Gate 1 checks moved to Python (no LLM hallucination on N/A data)
+  - Python short-circuit: rejected parcels skip LLM call entirely (2-3x faster for rejects)
+  - Estate of / Heirs detection (estate_flag)
+  - Absentee owner detection (mailing_differs)
+  - Shack detection (improvement < $10k, only if known)
+  - Lot too small (< 2,500 sqft, only if known)
+  - Liquidity check Gate 2 in Python
+  - Legal description keyword scan in Python (kill words + environmental)
+  - Bankruptcy/IRS scan in Python
+  - Legal class kill switch in Python
+  - Model updated to `llama3.1:70b` (from 8b)
+  - LLM now only handles scoring (Gate 4) for parcels that survive Python gates
+
+### Layer 4: Financial Modeling
+Files to update:
+- [ ] `backend/app/database.py` - Add columns:
+  - `projected_annual_cost` (estimated year 2 tax)
+  - `reserve_required` (lien_amount × 0.30)
+  - `total_holding_cost` (lien + reserve + projected year 2)
+- [ ] `backend/app/routers/scrapers.py` - Add portfolio endpoint:
+  - `GET /scrapers/portfolio` - total deployed, reserve used, available capital
+  - Enforce: never recommend BID if it would exceed $35k deployed (70% of $50k)
+
 ---
 
 ## 🔴 High Priority - Next Steps
@@ -98,7 +141,14 @@
 - [ ] Redemption tracking and interest calculations
 - [ ] ROI calculator per parcel
 
-### Notifications & Alerts
+### Notifications & Alerts 🔔
+- [ ] **Discord Webhook Notifications** ← HIGH PRIORITY
+  - Scrape job started / completed (with parcel count)
+  - Scrape crashed / auto-resumed (with error reason)
+  - Assessment complete (BID count, DO_NOT_BID count, top opportunities)
+  - New BID parcels found (parcel ID, amount, score, assessor link)
+  - Daily summary report (total scraped, assessed, BID count)
+  - Uses Discord Webhooks (no bot needed, just a URL in config)
 - [ ] Email alerts for new BID parcels
 - [ ] SMS alerts for high-value opportunities
 - [ ] Auction reminder notifications (7 days, 1 day before)

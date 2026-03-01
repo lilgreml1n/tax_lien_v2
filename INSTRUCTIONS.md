@@ -1,10 +1,13 @@
 # LienHunter v2 - Quick Start Guide
 
+**Last Updated:** 2026-02-28
+**Version:** 2.0.0 (Multi-State Edition)
+
 ## Overview
-Tax lien investment platform with 2-phase pipeline:
-1. **Scrape** - Pull raw parcel data + generate clickable review links
-2. **Assess** - Run AI analysis via DGX Ollama (Capital Guardian)
-3. **Review** - Human clicks links (Maps, Street View, Zillow, Assessor) for final approval
+Tax lien investment platform with 3nd-generation pipeline:
+1. **Scrape** - Pull raw parcel data from Arizona (Web) or Nebraska (PDF/Web)
+2. **Assess** - Multi-gate AI analysis via DGX Ollama (Capital Guardian)
+3. **Review** - React Frontend with GIS, Maps, and AI results
 
 ## ✨ What's New - Phase 1A
 Every parcel now includes **clickable links** for human review:

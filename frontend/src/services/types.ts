@@ -10,6 +10,7 @@ export interface ParcelSummary {
   risk_score: number | null;
   review_status: string | null;
   final_approved: boolean | null;
+  property_type: string | null;
 }
 
 export interface ParcelDetail {

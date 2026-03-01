@@ -87,3 +87,36 @@ def delete_event(event_id: int):
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Event not found")
     return {"status": "deleted"}
+
+
+# ── Notification toggle ───────────────────────────────────────────────────────
+
+@router.get("/notifications/status", tags=["Calendar"])
+def notifications_status():
+    """Check whether auction reminders are enabled or disabled."""
+    with engine.connect() as conn:
+        val = conn.execute(text(
+            "SELECT value FROM system_settings WHERE key_name = 'notifications_enabled'"
+        )).scalar()
+    enabled = str(val).lower() == "true"
+    return {"notifications_enabled": enabled, "status": "on" if enabled else "off"}
+
+
+@router.post("/notifications/enable", tags=["Calendar"])
+def enable_notifications():
+    """Turn auction email reminders ON."""
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE system_settings SET value = 'true' WHERE key_name = 'notifications_enabled'"
+        ))
+    return {"notifications_enabled": True, "status": "Reminders turned ON"}
+
+
+@router.post("/notifications/disable", tags=["Calendar"])
+def disable_notifications():
+    """Turn auction email reminders OFF."""
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE system_settings SET value = 'false' WHERE key_name = 'notifications_enabled'"
+        ))
+    return {"notifications_enabled": False, "status": "Reminders turned OFF"}
