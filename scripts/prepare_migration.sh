@@ -18,8 +18,7 @@ echo -e "${GREEN}=== Tax Lien v2 Migration Helper ===${NC}"
 echo "This script prepares your project for migration to the DGX."
 
 # 1. Database Backup
-echo -e "
-${YELLOW}[1/4] Backing up database...${NC}"
+echo -e "\n${YELLOW}[1/4] Backing up database...${NC}"
 
 # Check if container is running
 if [ "$(docker ps -q -f name=$DB_CONTAINER)" ]; then
@@ -52,27 +51,25 @@ else
 fi
 
 # 2. Archive Codebase
-echo -e "
-${YELLOW}[2/4] Creating project archive...${NC}"
+echo -e "\n${YELLOW}[2/4] Creating project archive...${NC}"
 echo "Excluding: node_modules, venv, .git, .env, __pycache__, and build artifacts"
 
-tar --exclude='./node_modules' 
-    --exclude='./frontend/node_modules' 
-    --exclude='./frontend/dist' 
-    --exclude='./scripts/venv' 
-    --exclude='./backend/app/__pycache__' 
-    --exclude='./.git' 
-    --exclude='./.env' 
-    --exclude='./.DS_Store' 
-    --exclude="./$ARCHIVE_FILE" 
-    --exclude="./$BACKUP_FILE" 
+tar --exclude='./node_modules' \
+    --exclude='./frontend/node_modules' \
+    --exclude='./frontend/dist' \
+    --exclude='./scripts/venv' \
+    --exclude='./backend/app/__pycache__' \
+    --exclude='./.git' \
+    --exclude='./.env' \
+    --exclude='./.DS_Store' \
+    --exclude="./$ARCHIVE_FILE" \
+    --exclude="./$BACKUP_FILE" \
     -czf $ARCHIVE_FILE .
 
 echo -e "${GREEN}✓ Archive created: $ARCHIVE_FILE ($(du -h $ARCHIVE_FILE | cut -f1))${NC}"
 
 # 3. Create Restore Script
-echo -e "
-${YELLOW}[3/4] Generating restore script for DGX...${NC}"
+echo -e "\n${YELLOW}[3/4] Generating restore script for DGX...${NC}"
 cat > restore_on_dgx.sh << 'EOF'
 #!/bin/bash
 echo "=== Tax Lien v2 Restore Script ==="
@@ -120,8 +117,7 @@ chmod +x restore_on_dgx.sh
 echo -e "${GREEN}✓ Created restore_on_dgx.sh${NC}"
 
 # 4. Instructions
-echo -e "
-${YELLOW}[4/4] Migration Instructions${NC}"
+echo -e "\n${YELLOW}[4/4] Migration Instructions${NC}"
 echo "Run this command to copy everything to the DGX:"
 echo -e "${GREEN}scp $ARCHIVE_FILE $BACKUP_FILE restore_on_dgx.sh user@192.168.100.133:~/tax_lien_v2/${NC}"
 echo ""
